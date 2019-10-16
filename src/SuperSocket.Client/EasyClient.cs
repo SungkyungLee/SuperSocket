@@ -47,9 +47,21 @@ namespace SuperSocket.Client
             try
             {
                 await socket.ConnectAsync(remoteEndPoint);
-                _channel = new TcpPipeChannel<TReceivePackage>(socket, _pipelineFilter, new ChannelOptions(), _logger);
+                //++ Replaced by ven.lee
+                //_channel = new TcpPipeChannel<TReceivePackage>(socket, _pipelineFilter, new ChannelOptions(), _logger);
+                var options =
+                    new ChannelOptions()
+                    {
+                        Logger = _logger,
+                    };
+                _channel = new TcpPipeChannel<TReceivePackage>(socket, _pipelineFilter, options);
+                //--
                 _channel.PackageReceived += OnPackageReceived;
                 _channel.Closed += OnClosed;
+
+                // The following block is added by ven.lee
+                _ = Task.Run(async () => { await _channel.StartAsync(); });
+
                 return true;
             }
             catch (Exception e)
