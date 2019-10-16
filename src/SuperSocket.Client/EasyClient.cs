@@ -47,15 +47,10 @@ namespace SuperSocket.Client
             try
             {
                 await socket.ConnectAsync(remoteEndPoint);
-                //++ Replaced by ven.lee
-                //_channel = new TcpPipeChannel<TReceivePackage>(socket, _pipelineFilter, new ChannelOptions(), _logger);
-                var options =
-                    new ChannelOptions()
-                    {
-                        Logger = _logger,
-                    };
-                _channel = new TcpPipeChannel<TReceivePackage>(socket, _pipelineFilter, options);
-                //--
+                _channel = new TcpPipeChannel<TReceivePackage>(socket, _pipelineFilter, new ChannelOptions
+                {
+                    Logger = _logger
+                });
                 _channel.PackageReceived += OnPackageReceived;
                 _channel.Closed += OnClosed;
 
