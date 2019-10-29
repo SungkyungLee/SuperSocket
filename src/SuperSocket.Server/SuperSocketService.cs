@@ -240,10 +240,20 @@ namespace SuperSocket.Server
             _state = ServerState.Stopped;
         }
 
+        //++ Added by ven.lee
+        public bool IsAnyListener()
+        {
+            return _channelCreators.Any();
+        }
+        //--
+
         async Task<bool> IServer.StartAsync()
         {
             await StartAsync(CancellationToken.None);
-            return true;
+            //++ Replaced by ven.lee
+            //return true;
+            return IsAnyListener();
+            //--
         }
 
         async Task IServer.StopAsync()
