@@ -51,11 +51,6 @@ namespace SuperSocket.Client
                 {
                     Logger = _logger
                 });
-                _channel.PackageReceived += OnPackageReceived;
-                _channel.Closed += OnClosed;
-
-                // The following block is added by ven.lee
-                _ = Task.Run(async () => { await _channel.StartAsync(); });
 
                 return true;
             }
@@ -66,10 +61,18 @@ namespace SuperSocket.Client
             }
         }
 
+        private async Task HandleSokcet(IChannel<TReceivePackage> channel)
+        {
+            await foreach (var p in channel.RunAsync())
+            {
+                await OnPackageReceived(channel as IChannel, p);
+            }
+
+            OnClosed(channel, EventArgs.Empty);
+        }
+
         private void OnClosed(object sender, EventArgs e)
         {
-            _channel.PackageReceived -= OnPackageReceived;
-            _channel.Closed -= OnClosed;
             Closed?.Invoke(sender, e);
         }
 

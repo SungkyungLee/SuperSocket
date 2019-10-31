@@ -7,18 +7,16 @@ using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using SuperSocket.ProtoBase;
-
+using System.Collections;
+using System.Threading.Tasks.Sources;
+using System.Threading;
 
 namespace SuperSocket.Channel
 {
-    public abstract class PipeChannel<TPackageInfo> : ChannelBase<TPackageInfo>, IChannel<TPackageInfo>, IChannel, IPipeChannel
+    public abstract partial class PipeChannel<TPackageInfo> : ChannelBase<TPackageInfo>, IChannel<TPackageInfo>, IChannel, IPipeChannel
         where TPackageInfo : class
     {
         private IPipelineFilter<TPackageInfo> _pipelineFilter;
-
-        private LinkedList<TPackageInfo> _receivedPackages = new LinkedList<TPackageInfo>();
-
-        private TaskCompletionSource<bool> _waitForNewPackageTaskSource = new TaskCompletionSource<bool>();
 
         protected Pipe Out { get; }
 
@@ -41,36 +39,49 @@ namespace SuperSocket.Channel
         protected PipeChannel(IPipelineFilter<TPackageInfo> pipelineFilter, ChannelOptions options)
         {
             _pipelineFilter = pipelineFilter;
+            _packageTaskSource = new ManualResetValueTaskSourceCore<TPackageInfo>();
             Options = options;
             Logger = options.Logger;
             Out = options.Out ?? new Pipe();
             In = options.In ?? new Pipe();
         }
 
-        public override async Task StartAsync()
+        public async override IAsyncEnumerable<TPackageInfo> RunAsync()
+        {
+            var readsTask = ProcessReads();
+            var sendsTask = ProcessSends();
+            
+            while (true)
+            {
+                var package = await ReceivePackage();
+
+                _packageTaskSource.Reset();
+
+                if (package == null)
+                {
+                    await HandleClosing(readsTask, sendsTask);
+                    yield break;
+                }
+
+                yield return package;
+            }
+        }
+
+        private async Task HandleClosing(Task readsTask, Task sendsTask)
         {
             try
             {
-                var readsTask = ProcessReads();
-                var sendsTask = ProcessSends();
-                var processTask = ProcessPackages();
-
                 await Task.WhenAll(readsTask, sendsTask);
-
-                OnIOClosed();
-                
-                await processTask;                
             }
             catch (Exception e)
             {
-                Logger.LogError(e, "Unhandled exception in the method PipeChannel.StartAsync.");
+                Logger.LogError(e, "Unhandled exception in the method PipeChannel.Run.");
             }
             finally
             {
                 OnClosed();
             }
         }
-
         protected virtual async Task FillPipeAsync(PipeWriter writer)
         {
             var options = Options;
@@ -118,54 +129,6 @@ namespace SuperSocket.Channel
         }
 
         protected abstract ValueTask<int> FillPipeWithDataAsync(Memory<byte> memory);
-
-        private void OnIOClosed()
-        {
-            _waitForNewPackageTaskSource?.SetResult(false);
-        }
-
-        async Task ProcessPackages()
-        {
-            var receivedPackages = _receivedPackages;
-
-            var result = await _waitForNewPackageTaskSource.Task;
-
-            if (!result)
-                return;
-
-            while (true)
-            {
-                var package = default(TPackageInfo);
-
-                lock (receivedPackages)
-                {
-                    if (receivedPackages.Count > 0)
-                    {
-                        package = receivedPackages.First.Value;
-                        receivedPackages.RemoveFirst();
-
-                        if (receivedPackages.Count == 0)
-                        {
-                            _waitForNewPackageTaskSource = new TaskCompletionSource<bool>();
-                        }
-                    }
-                }
-
-                if (package != null)
-                {
-                    await OnPackageReceived(package);
-                }
-                else
-                {
-                    result = await _waitForNewPackageTaskSource.Task;
-
-                    if (!result)
-                    {
-                        break;
-                    }
-                }
-            }
-        }
 
         protected virtual async Task ProcessReads()
         {
@@ -282,7 +245,10 @@ namespace SuperSocket.Channel
                     if (buffer.Length > 0)
                     {
                         if (!ReaderBuffer(buffer, out consumed, out examined))
+                        {
                             completed = true;
+                            break;
+                        }                        
                     }
 
                     if (completed)
@@ -315,33 +281,30 @@ namespace SuperSocket.Channel
                 if (currentPipelineFilter.NextFilter != null)
                     _pipelineFilter = currentPipelineFilter.NextFilter;
 
-                var pos = seqReader.Position.GetInteger();
+                var len = seqReader.Consumed;
 
-                if (maxPackageLength > 0 && pos > maxPackageLength)
+                // nothing has been consumed, need more data
+                if (len == 0)
+                    len = seqReader.Length;
+
+                if (maxPackageLength > 0 && len > maxPackageLength)
                 {
                     Logger.LogError($"Package cannot be larger than {maxPackageLength}.");
                     // close the the connection directly
                     Close();
+                    _packageTaskSource.SetResult(null);
                     return false;
                 }
             
                 // continue receive...
                 if (packageInfo == null)
                 {
-                    continue;
+                    return true;
                 }
 
                 currentPipelineFilter.Reset();
 
-                lock (_receivedPackages)
-                {
-                    _receivedPackages.AddLast(packageInfo);
-
-                    if (_receivedPackages.Count == 1)
-                    {
-                        _waitForNewPackageTaskSource.SetResult(true);
-                    }
-                }
+                _packageTaskSource.SetResult(packageInfo);
 
                 if (seqReader.End) // no more data
                 {
@@ -351,10 +314,11 @@ namespace SuperSocket.Channel
                 else
                 {
                     examined = consumed = seqReader.Position;
+                    seqReader = new SequenceReader<byte>(seqReader.Sequence.Slice(seqReader.Consumed));
                 }
             }
 
-            return true;        
+            return true;
         }
     }
 }
