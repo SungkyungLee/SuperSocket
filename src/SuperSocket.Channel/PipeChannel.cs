@@ -225,14 +225,30 @@ namespace SuperSocket.Channel
         {
             var writer = Out.Writer;
             await writer.WriteAsync(buffer);
-            await writer.FlushAsync();
+
+            //++ replaced by ven.lee
+            //await writer.FlushAsync();
+            var result = await writer.FlushAsync();
+            if (result.IsCompleted)
+            {
+                writer.Complete();
+            }
+            //--
         }
 
         public override async ValueTask SendAsync<TPackage>(IPackageEncoder<TPackage> packageEncoder, TPackage package)
         {
             var writer = Out.Writer;
             packageEncoder.Encode(writer, package);
-            await writer.FlushAsync();
+
+            //++ replaced by ven.lee
+            //await writer.FlushAsync();
+            var result = await writer.FlushAsync();
+            if (result.IsCompleted)
+            {
+                writer.Complete();
+            }
+            //--
         }
 
         protected internal ArraySegment<T> GetArrayByMemory<T>(ReadOnlyMemory<T> memory)
