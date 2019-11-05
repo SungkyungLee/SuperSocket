@@ -138,6 +138,10 @@ namespace SuperSocket.Channel
             Task reading = ReadPipeAsync(pipe.Reader);
 
             await Task.WhenAll(reading, writing);
+
+            //++ Added by ven.lee
+            _packageTaskSource.SetResult(null);
+            //--
         }
 
         protected async Task ProcessSends()
