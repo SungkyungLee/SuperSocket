@@ -10,7 +10,9 @@ using SuperSocket.ProtoBase;
 using System.Collections;
 using System.Threading.Tasks.Sources;
 using System.Threading;
+using System.Runtime.CompilerServices;
 
+[assembly: InternalsVisibleTo("Test")] 
 namespace SuperSocket.Channel
 {
     public abstract partial class PipeChannel<TPackageInfo> : ChannelBase<TPackageInfo>, IChannel<TPackageInfo>, IChannel, IPipeChannel
@@ -32,6 +34,13 @@ namespace SuperSocket.Channel
             get { return In; }
         }
 
+        IPipelineFilter IPipeChannel.PipelineFilter
+        {
+            get { return _pipelineFilter; }
+        }
+
+        private IObjectPipe<TPackageInfo> _packagePipe;
+
         protected ILogger Logger { get; }
 
         protected ChannelOptions Options { get; }
@@ -39,7 +48,7 @@ namespace SuperSocket.Channel
         protected PipeChannel(IPipelineFilter<TPackageInfo> pipelineFilter, ChannelOptions options)
         {
             _pipelineFilter = pipelineFilter;
-            _packageTaskSource = new ManualResetValueTaskSourceCore<TPackageInfo>();
+            _packagePipe = new DefaultObjectPipe<TPackageInfo>();
             Options = options;
             Logger = options.Logger;
             Out = options.Out ?? new Pipe();
@@ -53,9 +62,7 @@ namespace SuperSocket.Channel
             
             while (true)
             {
-                var package = await ReceivePackage();
-
-                _packageTaskSource.Reset();
+                var package = await _packagePipe.ReadAsync();
 
                 if (package == null)
                 {
@@ -185,7 +192,24 @@ namespace SuperSocket.Channel
             output.Complete();
         }
 
-        protected abstract ValueTask<int> SendAsync(ReadOnlySequence<byte> buffer);
+        protected virtual async ValueTask<int> SendAsync(ReadOnlySequence<byte> buffer)
+        {
+            var writer = Out.Writer;
+
+            var totalWritten = 0;
+
+            foreach (var piece in buffer)
+            {
+                var result = await writer.WriteAsync(piece);
+
+                if (!result.IsCompleted)
+                    break;
+
+                totalWritten += piece.Length;
+            }
+
+            return totalWritten;
+        }
 
 
         public override async ValueTask SendAsync(ReadOnlyMemory<byte> buffer)
@@ -258,6 +282,13 @@ namespace SuperSocket.Channel
                     if (completed)
                         break;
                 }
+                catch (Exception e)
+                {
+                    Logger.LogCritical(e, "Protocol error");
+                    // close the connection if get a protocol error
+                    Close();
+                    break;
+                }
                 finally
                 {
                     reader.AdvanceTo(consumed, examined);
@@ -272,6 +303,8 @@ namespace SuperSocket.Channel
             consumed = buffer.Start;
             examined = buffer.End;
 
+            var bytesConsumedTotal = 0L;
+
             var maxPackageLength = Options.MaxPackageLength;
 
             var seqReader = new SequenceReader<byte>(buffer);
@@ -282,10 +315,18 @@ namespace SuperSocket.Channel
 
                 var packageInfo = currentPipelineFilter.Filter(ref seqReader);
 
-                if (currentPipelineFilter.NextFilter != null)
-                    _pipelineFilter = currentPipelineFilter.NextFilter;
+                var nextFilter = currentPipelineFilter.NextFilter;
 
-                var len = seqReader.Consumed;
+                if (nextFilter != null)
+                {
+                    nextFilter.Context = currentPipelineFilter.Context; // pass through the context
+                    _pipelineFilter = nextFilter;
+                }
+
+                var bytesConsumed = seqReader.Consumed;
+                bytesConsumedTotal += bytesConsumed;
+
+                var len = bytesConsumed;
 
                 // nothing has been consumed, need more data
                 if (len == 0)
@@ -296,33 +337,29 @@ namespace SuperSocket.Channel
                     Logger.LogError($"Package cannot be larger than {maxPackageLength}.");
                     // close the the connection directly
                     Close();
-                    _packageTaskSource.SetResult(null);
+                    _packagePipe.Write(null);
                     return false;
                 }
             
                 // continue receive...
                 if (packageInfo == null)
                 {
+                    consumed = buffer.GetPosition(bytesConsumedTotal);
                     return true;
                 }
 
                 currentPipelineFilter.Reset();
 
-                _packageTaskSource.SetResult(packageInfo);
+                _packagePipe.Write(packageInfo);
 
                 if (seqReader.End) // no more data
                 {
-                    consumed = buffer.End;
-                    break;
+                    examined = consumed = buffer.End;
+                    return true;
                 }
-                else
-                {
-                    examined = consumed = seqReader.Position;
-                    seqReader = new SequenceReader<byte>(seqReader.Sequence.Slice(seqReader.Consumed));
-                }
+                
+                seqReader = new SequenceReader<byte>(seqReader.Sequence.Slice(bytesConsumed));
             }
-
-            return true;
         }
     }
 }
