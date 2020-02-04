@@ -146,9 +146,7 @@ namespace SuperSocket.Channel
 
             await Task.WhenAll(reading, writing);
 
-            //++ Added by ven.lee
             _packagePipe.Write(null);
-            //--
         }
 
         protected async Task ProcessSends()
