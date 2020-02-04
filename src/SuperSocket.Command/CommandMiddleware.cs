@@ -64,7 +64,7 @@ namespace SuperSocket.Command
         {
             var commandInterface = typeof(ICommand<TKey, TPackageInfo>).GetTypeInfo();
             var asyncCommandInterface = typeof(IAsyncCommand<TKey, TPackageInfo>).GetTypeInfo();            
-            var commandTypes = commandOptions.Value.GetCommandTypes((t) => (commandInterface.IsAssignableFrom(t) || asyncCommandInterface.IsAssignableFrom(t)) && !t.IsAbstract); // ven.lee.
+            var commandTypes = commandOptions.Value.GetCommandTypes((t) => (commandInterface.IsAssignableFrom(t) || asyncCommandInterface.IsAssignableFrom(t)) && !t.IsAbstract);
             var comparer = serviceProvider.GetService<IEqualityComparer<TKey>>();
 
             var commands = commandTypes.Select(t =>  ActivatorUtilities.CreateInstance(serviceProvider, t) as ICommand<TKey>);
